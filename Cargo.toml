@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+# Wikelist Watcher (public): `wikelo-watcher.exe` plus the crates it shares with the
+# Wikelist server: dataset model and rules (`wikelo-core`), game install discovery
+# (`wikelo-install`) and the Game.log parser (`wikelo-log`). The server repository uses
+# these crates as path dependencies from its `watcher/` subtree.
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive", "rc"] }
+# float_roundtrip: a dataset parsed from JSON must hash exactly like the one that was serialized.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+regex = "1"
+clap = { version = "4", features = ["derive", "env"] }
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+anyhow = "1"
+
+# StarBreaker: Star Citizen Data.p4k / DataForge reader (MIT). Not on crates.io,
+# so pinned to a commit that already understands Game2.dcb v8 and the p4k v2 layout.
+starbreaker-p4k = { git = "https://github.com/diogotr7/StarBreaker", rev = "4aba5e3ea07f2f2a656c67b1d9f06cc8a89a42a6" }
+starbreaker-datacore = { git = "https://github.com/diogotr7/StarBreaker", rev = "4aba5e3ea07f2f2a656c67b1d9f06cc8a89a42a6" }
+starbreaker-common = { git = "https://github.com/diogotr7/StarBreaker", rev = "4aba5e3ea07f2f2a656c67b1d9f06cc8a89a42a6" }
+starbreaker-dds = { git = "https://github.com/diogotr7/StarBreaker", rev = "4aba5e3ea07f2f2a656c67b1d9f06cc8a89a42a6" }
+starbreaker-3d = { git = "https://github.com/diogotr7/StarBreaker", rev = "4aba5e3ea07f2f2a656c67b1d9f06cc8a89a42a6" }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# The DataForge parse is CPU heavy; keep dependencies optimized even in dev builds.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"

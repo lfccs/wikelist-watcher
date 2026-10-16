@@ -1,0 +1,18 @@
+# Rust
+target/
+**/*.rs.bk
+# Scratch
+tmp/
+*.log
+# Bundles generated next to the exe (`wikelo-watcher bundle`)
+wikelo-*.zip
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+# Keys and watcher state must never be committed
+*.key
+*.pid
+watcher.json
+watcher.status.json
