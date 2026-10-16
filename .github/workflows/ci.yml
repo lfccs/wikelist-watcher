@@ -32,10 +32,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
-      - uses: taiki-e/install-action@cargo-fuzz
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz -> target
+      - name: cargo-fuzz (cached in ~/.cargo/bin by rust-cache after the first run)
+        run: cargo +nightly install cargo-fuzz --locked
       - name: Fuzz the dataset, Game.log and manifest parsers (60 s each)
         run: |
           for t in dataset_json log_lines bundle_manifest; do
