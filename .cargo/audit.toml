@@ -1,0 +1,12 @@
+# cargo-audit policy (CI runs `cargo audit` on both lockfiles). A vulnerability fails the build
+# unless listed here with a reason; "unmaintained" advisories only warn.
+[advisories]
+ignore = [
+    # quick-xml 0.37 (RUSTSEC-2026-0194 quadratic attribute check, RUSTSEC-2026-0195 NsReader
+    # allocation): pulled in only by StarBreaker (pinned git rev, requires ^0.37), which uses it
+    # to read the material XML of the player's own Data.p4k and to write XML exports. The server
+    # never parses network input with it (no p4k in server mode), so the two DoS vectors do not
+    # reach us. Revisit when StarBreaker moves to >= 0.41.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]

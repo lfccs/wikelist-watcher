@@ -1,0 +1,45 @@
+# Fuzz targets for the parsers that read data produced by others: the dataset JSON (also what
+# the server's quarantine re-parses), Game.log lines and bundle manifests. `cargo +nightly
+# fuzz run <target>` from the repository root (ci.yml runs each one for a minute).
+[package]
+name = "wikelist-watcher-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace: cargo-fuzz builds it with nightly and sanitizer flags of its own.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = { version = "1", features = ["float_roundtrip"] }
+wikelo-core = { path = "../crates/wikelo-core" }
+wikelo-log = { path = "../crates/wikelo-log" }
+wikelo-watcher = { path = "../crates/wikelo-watcher", default-features = false }
+
+[[bin]]
+name = "dataset_json"
+path = "fuzz_targets/dataset_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "log_lines"
+path = "fuzz_targets/log_lines.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bundle_manifest"
+path = "fuzz_targets/bundle_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

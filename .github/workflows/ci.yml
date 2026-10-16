@@ -1,4 +1,5 @@
-# Every push: clippy without warnings and the tests, with the committed Cargo.lock.
+# Every push: clippy without warnings and the tests with the committed Cargo.lock, dependency
+# advisories, and a short fuzz run over the parsers that read other people's data.
 name: ci
 
 on:
@@ -18,3 +19,31 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Tests
         run: cargo test --workspace --locked
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit --file Cargo.lock
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
+      - name: Fuzz the dataset, Game.log and manifest parsers (60 s each)
+        run: |
+          for t in dataset_json log_lines bundle_manifest; do
+            cargo +nightly fuzz run "$t" -- -max_total_time=60 -timeout=10 -rss_limit_mb=2048
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          if-no-files-found: ignore
