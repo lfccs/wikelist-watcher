@@ -435,8 +435,20 @@ pub struct CraftRecipe {
     pub sources: Vec<CraftSource>,
 }
 
+/// A mission name without the instance index the game appends to some of them in Game.log
+/// (`GillysPilotSchool_Mission06_0` is the contract `GillysPilotSchool_Mission06`). Names that
+/// do not end in `_<digits>` come back unchanged.
+pub fn instance_base(name: &str) -> &str {
+    let name = name.trim();
+    match name.rsplit_once('_') {
+        Some((base, suffix)) if !base.is_empty() && !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => name,
+    }
+}
+
 impl WikeloDataset {
-    /// Rewards of a non-Wikelo mission, matched by contract GUID first, then by debug name.
+    /// Rewards of a non-Wikelo mission, matched by contract GUID first, then by debug name
+    /// (case-insensitive, with or without the `_<n>` instance index Game.log may append).
     pub fn mission_rewards_for(&self, contract_id: Option<&str>, debug_name: Option<&str>) -> Vec<&MissionReward> {
         if let Some(id) = contract_id {
             let by_id: Vec<&MissionReward> = self.mission_rewards.iter().filter(|r| r.contract_id == id).collect();
@@ -444,10 +456,14 @@ impl WikeloDataset {
                 return by_id;
             }
         }
-        match debug_name {
-            Some(dn) => self.mission_rewards.iter().filter(|r| r.debug_name.eq_ignore_ascii_case(dn)).collect(),
-            None => Vec::new(),
+        let Some(dn) = debug_name else { return Vec::new() };
+        for wanted in [dn.trim(), instance_base(dn)] {
+            let found: Vec<&MissionReward> = self.mission_rewards.iter().filter(|r| r.debug_name.eq_ignore_ascii_case(wanted)).collect();
+            if !found.is_empty() {
+                return found;
+            }
         }
+        Vec::new()
     }
 
     /// Recipe whose output is `item_id`, if the game lets you craft it.
@@ -639,5 +655,55 @@ mod tests {
         assert!(json.contains("\"schemaVersion\":1"));
         let back: WikeloDataset = serde_json::from_str(&json).unwrap();
         assert_eq!(back, ds);
+    }
+}
+
+#[cfg(test)]
+mod mission_reward_tests {
+    use super::*;
+
+    fn reward(contract_id: &str, debug_name: &str, qty: i64) -> MissionReward {
+        MissionReward {
+            contract_id: contract_id.into(),
+            debug_name: debug_name.into(),
+            generator: "Unaffiliated_Generator".into(),
+            item_id: "scrip".into(),
+            class_name: "Scrip_Merc_1".into(),
+            name: "MG Scrip".into(),
+            qty,
+            owner_only: true,
+        }
+    }
+
+    #[test]
+    fn instance_suffix_is_optional() {
+        assert_eq!(instance_base("GillysPilotSchool_Mission06_0"), "GillysPilotSchool_Mission06");
+        assert_eq!(instance_base("GillysPilotSchool_Mission06"), "GillysPilotSchool_Mission06");
+        assert_eq!(instance_base("TheCollector_Favours_PolarisParts"), "TheCollector_Favours_PolarisParts");
+        assert_eq!(instance_base(" HeadHunters_Patrol_12 "), "HeadHunters_Patrol");
+        assert_eq!(instance_base("_7"), "_7");
+    }
+
+    #[test]
+    fn mission_rewards_match_by_id_then_by_name_with_or_without_the_index() {
+        let mut ds: WikeloDataset = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1, "source": "test",
+            "build": {"channel": "LIVE", "branch": "b", "version": "4.10.1.1", "p4Change": "1", "buildId": "", "tag": "", "dcbVersion": 8, "p4kSize": 1},
+            "generatedAt": "2026-01-01T00:00:00Z",
+            "faction": {"id": "w", "name": "Wikelo", "scopes": []},
+            "emporiums": [], "contracts": [], "items": [], "favorConversions": [], "crafting": [], "warnings": [], "missionRewards": []
+        }))
+        .expect("fixture");
+        ds.mission_rewards = vec![reward("id-6", "GillysPilotSchool_Mission06", 14), reward("id-5", "GillysPilotSchool_Mission05", 12), reward("id-5", "GillysPilotSchool_Mission05", 1)];
+
+        let by_id = ds.mission_rewards_for(Some("id-5"), None);
+        assert_eq!(by_id.iter().map(|r| r.qty).collect::<Vec<_>>(), vec![12, 1]);
+        // The log's contractDefinitionId is not always the generator entry id: fall back to the name.
+        let logged = ds.mission_rewards_for(Some("ce36fccc-other"), Some("GillysPilotSchool_Mission06_0"));
+        assert_eq!(logged.len(), 1);
+        assert_eq!(logged[0].qty, 14);
+        assert_eq!(ds.mission_rewards_for(None, Some("gillyspilotschool_mission06")).len(), 1, "case does not matter");
+        assert!(ds.mission_rewards_for(None, Some("GillysPilotSchool_Mission07_0")).is_empty());
+        assert!(ds.mission_rewards_for(Some("nope"), None).is_empty());
     }
 }
