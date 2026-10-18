@@ -2,7 +2,7 @@
 
 `wikelo-watcher.exe` é o programa que roda no PC de quem joga Star Citizen e conversa com um servidor [Wikelist](https://wikelist.net) (o site que acompanha os contratos do **Wikelo**). Ele faz duas coisas:
 
-- **Lê o `Game.log`** enquanto você joga e manda para a sua conta os eventos de missão do Wikelo (aceitou, entregou, concluiu). O site ajusta seu inventário e registra as conclusões sozinho.
+- **Lê o `Game.log`** enquanto você joga e manda para a sua conta os eventos de missão do Wikelo (aceitou, entregou, concluiu) e o fim das outras missões que pagam itens que o site acompanha, dizendo se a missão era sua ou compartilhada por outro jogador (linha `<MissionShared>`). O site ajusta seu inventário e registra as conclusões sozinho.
 - **Envia os dados do jogo** quando sai uma versão nova (opcional): extrai os contratos, itens e ícones do `Data.p4k` instalado e sobe um pacote para o servidor, que valida tudo em quarentena antes de usar.
 
 Este repositório é público para que qualquer pessoa possa ler o que o programa faz e conferir que o executável publicado foi compilado a partir deste código.

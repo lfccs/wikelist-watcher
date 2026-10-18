@@ -75,6 +75,11 @@ pub struct MissionReward {
     pub qty: i64,
     /// Only the player who owns the mission receives it (party members do not).
     pub owner_only: bool,
+    /// The mission pays exactly one of the items flagged like this for the same contract, and
+    /// which one is the player's choice inside the mission, which Game.log does not record
+    /// (Project Hyperion's recombinant samples). `qty` is per item. The site asks the player.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub one_of: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -672,6 +677,7 @@ mod mission_reward_tests {
             name: "MG Scrip".into(),
             qty,
             owner_only: true,
+            one_of: false,
         }
     }
 

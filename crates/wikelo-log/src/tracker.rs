@@ -24,6 +24,10 @@ pub struct MissionState {
     pub completion: Option<CompletionType>,
     /// (objective_id, item_id, location_hash, state)
     pub objectives: Vec<(String, Option<String>, Option<u64>, String)>,
+    /// GEID of the player who shared this mission with us (`<MissionShared>`). `None` for our
+    /// own missions, and for a shared one whose share happened in an earlier session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_by: Option<String>,
 }
 
 impl MissionState {
@@ -58,6 +62,8 @@ pub struct MissionTracker {
     missions: HashMap<String, MissionState>,
     pub changelist: Option<String>,
     pub nickname: Option<String>,
+    /// Our own GEID, from the login line.
+    pub geid: Option<String>,
     /// Most recent Wikelo completion: (mission_id, at)
     last_complete: Option<(String, String)>,
 }
@@ -91,7 +97,16 @@ impl MissionTracker {
             }
             LogEvent::Identity { at, nickname, geid } => {
                 self.nickname = Some(nickname.clone());
+                self.geid = Some(geid.clone());
                 out.push(TrackerOutput::Identity { at, nickname, geid });
+            }
+            LogEvent::MissionShared { mission_id, owner_id, .. } => {
+                // Only other players' shares reach our log; should our own ever show up, the
+                // mission is still ours.
+                if self.geid.as_deref() != Some(owner_id.as_str()) {
+                    let m = self.missions.entry(mission_id.clone()).or_insert_with(|| MissionState { mission_id, ..Default::default() });
+                    m.shared_by.get_or_insert(owner_id);
+                }
             }
             LogEvent::ContractOffered { at, debug_name, .. } => {
                 out.push(TrackerOutput::ContractOffered { at, debug_name });
@@ -267,6 +282,29 @@ mod tests {
             }
             o => panic!("{o:?}"),
         }
+    }
+
+    #[test]
+    fn shared_missions_carry_their_owner() {
+        // A mission another player shared: the share push comes first, then the same "Contract
+        // Accepted" notification our own missions show.
+        let out = feed(&[
+            "<2026-10-12T17:49:00.000Z> [Notice] <AccountLoginCharacterStatus_Character> Character: createdAt 1 - updatedAt 2 - geid 204354536146 - accountId 1 - name felcs - state STATE_CURRENT nickname=\"felcs\" playerGEID=204354536146 [Team_GameServices][Login]",
+            "<2026-10-12T17:50:09.311Z> [Notice] <MissionShared> Received share push message: ownerId[204698862647] - missionId[7a2e2cf3-1c1b-457f-81fe-725b990fc0b3] [Team_GameServices][Missions]",
+            "<2026-10-12T17:50:15.036Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Contract Accepted:  RSI Disc. Month: Important Supply Haul: \" [25] to queue. New queue size: 2, MissionId: [7a2e2cf3-1c1b-457f-81fe-725b990fc0b3], ObjectiveId: [] [Team_CoreGameplayFeatures][Missions][Comms]",
+            "<2026-10-12T17:50:16.000Z> [Notice] <CLocalMissionPhaseMarker::CreateMarker> Creating objective marker: missionId [7a2e2cf3-1c1b-457f-81fe-725b990fc0b3], generator name [RSI_Discovery], contract [RSI_Discovery_Haul_0], contractDefinitionId[11111111-2222-3333-4444-555555555555], objectiveId [x], markerEntityId [1], zoneHostId [1], position [x: 0, y: 0, z: 0] [Team_MissionFeatures][Missions]",
+            "<2026-10-12T18:30:00.000Z> [Notice] <EndMission> Ending mission for player. MissionId[7a2e2cf3-1c1b-457f-81fe-725b990fc0b3] Player[felcs] PlayerId[204354536146] CompletionType[Complete] Reason[Mission Ended] [Team_MissionFeatures][Missions]",
+            // Our own mission: no share line.
+            "<2026-10-12T19:00:37.669Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Contract Accepted:  Jorrit Dossier: Project Hyperion <EM4>[BP]*</EM4>: \" [166] to queue. New queue size: 1, MissionId: [0eb6ed6c-ff13-4d2a-a6e6-542c6c182b88], ObjectiveId: [] [Team_CoreGameplayFeatures][Missions][Comms]",
+            "<2026-10-12T19:00:37.666Z> [Notice] <CLocalMissionPhaseMarker::CreateMarker> Creating objective marker: missionId [0eb6ed6c-ff13-4d2a-a6e6-542c6c182b88], generator name [HockrowAgency_FacilityDelve], contract [Hockrow_FacilityDelve_P3MM_Repeat_0], contractDefinitionId[bbb52b26-4a27-4afa-aac5-9299fde95dbf], objectiveId [8633c538-57aa-e845-9b89-e8cdd1bbe292], markerEntityId [1], zoneHostId [1], position [x: 0, y: 0, z: 0] [Team_MissionFeatures][Missions]",
+            "<2026-10-12T21:46:30.460Z> [Notice] <EndMission> Ending mission for player. MissionId[0eb6ed6c-ff13-4d2a-a6e6-542c6c182b88] Player[felcs] PlayerId[204354536146] CompletionType[Complete] Reason[Mission Ended] [Team_MissionFeatures][Missions]",
+        ]);
+        let ended: Vec<&MissionState> = out.iter().filter_map(|o| if let TrackerOutput::MissionEnded { mission } = o { Some(mission) } else { None }).collect();
+        assert_eq!(ended.len(), 2, "{out:?}");
+        assert_eq!(ended[0].shared_by.as_deref(), Some("204698862647"));
+        assert!(ended[0].accepted_at.is_some(), "a shared mission still shows Contract Accepted");
+        assert_eq!(ended[1].shared_by, None);
+        assert_eq!(ended[1].debug_name.as_deref(), Some("Hockrow_FacilityDelve_P3MM_Repeat_0"));
     }
 
     #[test]

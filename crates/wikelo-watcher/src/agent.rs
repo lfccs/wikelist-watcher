@@ -541,7 +541,8 @@ fn describe(out: &TrackerOutput) -> Option<String> {
         TrackerOutput::MissionEnded { mission } => {
             let name = mission.title.clone().or(mission.debug_name.clone()).unwrap_or_default();
             let how = mission.completion.as_ref().map(|c| format!("{c:?}")).unwrap_or_default();
-            if mission.is_wikelo() { format!("✔ Wikelo {how}: {name}") } else { format!("✔ missão {how}: {name}") }
+            let whose = if mission.shared_by.is_some() { " (de outro jogador)" } else { "" };
+            if mission.is_wikelo() { format!("✔ Wikelo {how}: {name}{whose}") } else { format!("✔ missão {how}: {name}{whose}") }
         }
         TrackerOutput::BlueprintReceived { name, .. } => format!("blueprint recebido: {name}"),
         TrackerOutput::AtEmporium { location_class, .. } => format!("no Wikelo: {location_class}"),

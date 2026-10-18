@@ -564,7 +564,7 @@ mod tests {
             favor_conversions: vec![],
             crafting: vec![],
             warnings: vec!["w".into()],
-            mission_rewards: vec![MissionReward { contract_id: "m1".into(), debug_name: "Patrol".into(), generator: "HH".into(), item_id: "i2".into(), class_name: "MG_Scrip".into(), name: "MG Scrip".into(), qty: 10, owner_only: true }],
+            mission_rewards: vec![MissionReward { contract_id: "m1".into(), debug_name: "Patrol".into(), generator: "HH".into(), item_id: "i2".into(), class_name: "MG_Scrip".into(), name: "MG Scrip".into(), qty: 10, owner_only: true, one_of: false }],
             extractor: Some(ExtractorInfo { name: "wikelo-watcher".into(), version: "0.1.0".into(), commit: "dev".into(), dcb_sha256: "a".into(), ini_sha256: "b".into() }),
         }
     }

@@ -253,13 +253,53 @@ impl<'r, 'db, 'a> Normalizer<'r, 'db, 'a> {
                                 name: item.name.clone(),
                                 qty: i(r, "amount").unwrap_or(1),
                                 owner_only: b(r, "awardOnlyToMissionOwner").unwrap_or(true),
+                                one_of: false,
                             });
                         }
                     }
                 }
             }
         }
+        out.extend(self.sample_rewards(&known));
         out.sort_by(|x, y| x.generator.cmp(&y.generator).then(x.debug_name.cmp(&y.debug_name)).then(x.name.cmp(&y.name)));
+        out
+    }
+
+    /// Project Hyperion (Hockrow's phase-3 facility delve) pays its recombinant with a physical
+    /// sample box spawned in the lab, not with a contract result, so the generator record never
+    /// names the item. The player picks one of the nine `Carryable_TBO_ASDReward_*` samples and
+    /// Game.log does not say which (every alternative completes at once), hence `one_of`: the
+    /// site asks the player when the mission is seen to complete. Checked on 4.10 logs.
+    fn sample_rewards(&mut self, known: &HashMap<String, Item>) -> Vec<MissionReward> {
+        const GENERATOR_RECORD: &str = "ContractGenerator.HockrowAgency_FacilityDelve";
+        const MISSION_PREFIX: &str = "Hockrow_FacilityDelve_P3MM";
+        const SAMPLE_PREFIX: &str = "carryable_tbo_asdreward_";
+        let generator = GENERATOR_RECORD.trim_start_matches("ContractGenerator.");
+        let Some(record) = self.res.find_by_name("ContractGenerator", GENERATOR_RECORD) else { return Vec::new() };
+        let Ok(v) = self.res.materialize(&record) else { return Vec::new() };
+        let root = record_value(&v);
+        let mut samples: Vec<&Item> = known.values().filter(|i| i.class_name.to_ascii_lowercase().starts_with(SAMPLE_PREFIX)).collect();
+        samples.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut out = Vec::new();
+        for g in arr(&root, "generators") {
+            for c in arr(g, "contracts") {
+                let (Some(id), Some(debug_name)) = (s(c, "id"), s(c, "debugName")) else { continue };
+                if !debug_name.trim().starts_with(MISSION_PREFIX) {
+                    continue;
+                }
+                out.extend(samples.iter().map(|item| MissionReward {
+                    contract_id: id.to_string(),
+                    debug_name: debug_name.trim().to_string(),
+                    generator: generator.to_string(),
+                    item_id: item.id.clone(),
+                    class_name: item.class_name.clone(),
+                    name: item.name.clone(),
+                    qty: 1,
+                    owner_only: false,
+                    one_of: true,
+                }));
+            }
+        }
         out
     }
 

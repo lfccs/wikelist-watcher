@@ -485,11 +485,12 @@ pub fn plan_completion(contract: &Contract) -> InventoryPlan {
 }
 
 /// What completing a non-Wikelo mission pays, from the game data. `owned` says whether
-/// this player accepted the mission (owner-only rewards go to nobody else).
+/// this player accepted the mission (owner-only rewards go to nobody else). `one_of` sets
+/// are not deltas but a question for the player, so they are left out here.
 pub fn plan_mission_rewards(rewards: &[&MissionReward], owned: bool) -> InventoryPlan {
     let mut plan = InventoryPlan::default();
     for r in rewards {
-        if r.qty <= 0 {
+        if r.qty <= 0 || r.one_of {
             continue;
         }
         let change = InventoryChange { item_id: r.item_id.clone(), name: r.name.clone(), delta: r.qty };
@@ -543,7 +544,9 @@ mod plan_tests {
 
     #[test]
     fn mission_rewards_depend_on_ownership() {
-        let r = MissionReward { contract_id: "c".into(), debug_name: "Patrol".into(), generator: "X".into(), item_id: "scrip".into(), class_name: "s".into(), name: "MG Scrip".into(), qty: 14, owner_only: true };
+        let r = MissionReward { contract_id: "c".into(), debug_name: "Patrol".into(), generator: "X".into(), item_id: "scrip".into(), class_name: "s".into(), name: "MG Scrip".into(), qty: 14, owner_only: true, one_of: false };
+        let sample = MissionReward { one_of: true, owner_only: false, item_id: "rgl2".into(), name: "RCMBNT-RGL-2".into(), qty: 1, ..r.clone() };
+        assert!(plan_mission_rewards(&[&sample], true).is_empty(), "a one-of set is asked, not applied");
         let owned = plan_mission_rewards(&[&r], true);
         assert_eq!(owned.certain.len(), 1);
         assert_eq!(owned.certain[0].delta, 14);

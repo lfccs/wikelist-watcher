@@ -76,6 +76,11 @@ pub enum LogEvent {
     AtEmporium { at: String, nickname: String, location_class: String },
     /// `<Add Inventory Management Move> ... Type[Move|Store|Drop|Interaction] ... ItemClass[<class>]`
     ItemMoved { at: String, nickname: String, move_type: String, source: String, target: String, item_class: String },
+    /// `<MissionShared> Received share push message: ownerId[<geid>] - missionId[<uuid>]` — another
+    /// player shared their mission with us; `owner_id` is their GEID. Our own missions never
+    /// produce this line, so it is what tells a shared mission from one we accepted ourselves
+    /// (both show the same "Contract Accepted" notification).
+    MissionShared { at: String, mission_id: String, owner_id: String },
 }
 
 impl LogEvent {
@@ -91,7 +96,8 @@ impl LogEvent {
             | LogEvent::EndMission { at, .. }
             | LogEvent::BlueprintReceived { at, .. }
             | LogEvent::AtEmporium { at, .. }
-            | LogEvent::ItemMoved { at, .. } => at,
+            | LogEvent::ItemMoved { at, .. }
+            | LogEvent::MissionShared { at, .. } => at,
         }
     }
 }
@@ -118,6 +124,7 @@ pub struct LineParser {
     blueprint: Regex,
     at_emporium: Regex,
     item_moved: Regex,
+    shared: Regex,
 }
 
 impl Default for LineParser {
@@ -143,6 +150,7 @@ impl LineParser {
             blueprint: rx(r#"Added notification "Received Blueprint:\s*(?P<name>.*?):?\s*"\s*\[\d+\]"#),
             at_emporium: rx(r"<RequestLocationInventory> Player\[(?P<nick>[^\]]+)\] requested inventory for Location\[(?P<loc>TheCollector[A-Za-z]*_Stanton\d+)\]"),
             item_moved: rx(r"<Add Inventory Management Move> New Request\[\d+\] Player\[(?P<nick>[^\]]+)\] Type\[(?P<ty>\w+)\] SourceInventory\[(?P<src>[^\]]*)\] TargetInventory\[(?P<dst>[^\]]*)\] ItemClass\[(?P<class>[^\]]*)\]"),
+            shared: rx(r"<MissionShared> Received share push message: ownerId\[(?P<owner>\d+)\] - missionId\[(?P<mid>[0-9a-fA-F-]{36})\]"),
         }
     }
 
@@ -248,6 +256,11 @@ impl LineParser {
         {
             return Some(LogEvent::AtEmporium { at, nickname: c["nick"].to_string(), location_class: c["loc"].to_string() });
         }
+        if line.contains("<MissionShared>")
+            && let Some(c) = self.shared.captures(line)
+        {
+            return Some(LogEvent::MissionShared { at, mission_id: c["mid"].to_string(), owner_id: c["owner"].to_string() });
+        }
         if line.contains("<Add Inventory Management Move>")
             && let Some(c) = self.item_moved.captures(line)
         {
@@ -282,6 +295,7 @@ mod tests {
     const IDENT: &str = "<2026-10-13T21:36:19.000Z> [Notice] <AccountLoginCharacterStatus_Character> Character: createdAt 1 - updatedAt 2 - geid 204354536146 - accountId 1 - name felcs - state STATE_CURRENT nickname=\"felcs\" playerGEID=204354536146 [Team_GameServices][Login]";
     const HEADER: &str = "<2026-10-13T21:34:02.356Z> BackupNameAttachment=\" Build(12913470) 13 Oct 26 (18 33 55)\"  -- used by backup system";
     const BLUEPRINT: &str = "<2026-06-01T12:00:00.000Z> [Notice] <SHUDEvent_OnNotification> Added notification \"Received Blueprint: Monde Arms Hemlock Camo: \" [3] to queue. New queue size: 1, MissionId: [00000000-0000-0000-0000-000000000000], ObjectiveId: [] [Team_CoreGameplayFeatures][Missions][Comms]";
+    const SHARED: &str = "<2026-10-12T17:50:09.311Z> [Notice] <MissionShared> Received share push message: ownerId[204698862647] - missionId[7a2e2cf3-1c1b-457f-81fe-725b990fc0b3] [Team_GameServices][Missions]";
 
     #[test]
     fn parses_marker() {
@@ -323,6 +337,21 @@ mod tests {
             p.parse(BLUEPRINT).unwrap(),
             LogEvent::BlueprintReceived { at: "2026-06-01T12:00:00.000Z".into(), name: "Monde Arms Hemlock Camo".into() }
         );
+    }
+
+    #[test]
+    fn parses_mission_shared() {
+        let p = LineParser::new();
+        assert_eq!(
+            p.parse(SHARED).unwrap(),
+            LogEvent::MissionShared {
+                at: "2026-10-12T17:50:09.311Z".into(),
+                mission_id: "7a2e2cf3-1c1b-457f-81fe-725b990fc0b3".into(),
+                owner_id: "204698862647".into(),
+            }
+        );
+        // The companion line carries nothing.
+        assert!(p.parse("<2026-10-12T17:50:09.310Z> [Notice] <MissionSharedOnMessaged> onMessage [Team_GameServices][Missions]").is_none());
     }
 
     #[test]
