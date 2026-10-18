@@ -72,6 +72,11 @@ impl ModelExporter {
     }
 
     /// Export one entity class as GLB bytes.
+    /// One file of the archive as the server needs it (localization tables, for one).
+    pub fn read_file(&self, path: &str) -> Result<Vec<u8>, GlbError> {
+        self.p4k.read_file(path).map_err(|e| GlbError::P4k(format!("{path}: {e}")))
+    }
+
     pub fn export(&self, class_name: &str, detail: ModelDetail) -> Result<Vec<u8>, GlbError> {
         let started = Instant::now();
         let db = Database::from_bytes(&self.dcb).map_err(|e| GlbError::Dcb(e.to_string()))?;
