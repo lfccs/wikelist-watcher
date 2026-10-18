@@ -146,13 +146,34 @@ impl From<&Contract> for ContractSnapshot {
     }
 }
 
-/// One human-readable difference between two builds of a contract.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// One difference between two builds of a contract. `text` is the sentence in Portuguese (the
+/// watcher and older clients); the structured fields let the site say it in its own language
+/// (web/src/lib/changes.ts), with the item name left as it is.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Change {
     /// `requirement` | `reward` | `rep` | `title` | `other`
     pub kind: String,
     pub text: String,
+    /// `add` | `remove` | `qty` | `title` | `rep` | `min_rep` | `once`
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub op: String,
+    /// The item for `add`, `remove` and `qty`, as the snapshot names it (an alternative keeps
+    /// its "(opção N)" suffix).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// What it was: the amount removed, the old quantity, title or reputation. `None` for a
+    /// `min_rep` that did not exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// What it is now: the amount added, the new quantity, title or reputation; `once` or
+    /// `repeatable` for `once`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+}
+
+fn change(kind: &str, op: &str, text: String, name: Option<&str>, from: Option<String>, to: Option<String>) -> Change {
+    Change { kind: kind.into(), text, op: op.into(), name: name.map(str::to_string), from, to }
 }
 
 fn fmt_qty(q: f64, unit: &str) -> String {
@@ -164,43 +185,47 @@ fn fmt_qty(q: f64, unit: &str) -> String {
 pub fn diff_snapshots(prev: &ContractSnapshot, cur: &ContractSnapshot) -> Vec<Change> {
     let mut out = Vec::new();
     if prev.title != cur.title {
-        out.push(Change { kind: "title".into(), text: format!("Título: “{}” → “{}”", prev.title, cur.title) });
+        out.push(change("title", "title", format!("Título: “{}” → “{}”", prev.title, cur.title), None, Some(prev.title.clone()), Some(cur.title.clone())));
     }
     let diff_list = |kind: &str, a: &[SnapQty], b: &[SnapQty], out: &mut Vec<Change>| {
         let label_add = if kind == "requirement" { "Passou a pedir" } else { "Nova recompensa:" };
         let label_rm = if kind == "requirement" { "Não pede mais" } else { "Deixou de dar" };
         for x in b {
             match a.iter().find(|y| y.name == x.name) {
-                None => out.push(Change { kind: kind.into(), text: format!("{label_add} {} {}", fmt_qty(x.qty, &x.unit), x.name) }),
-                Some(y) if (y.qty - x.qty).abs() > 1e-9 => out.push(Change {
-                    kind: kind.into(),
-                    text: format!("{}: {} → {}", x.name, fmt_qty(y.qty, &y.unit), fmt_qty(x.qty, &x.unit)),
-                }),
+                None => {
+                    let q = fmt_qty(x.qty, &x.unit);
+                    out.push(change(kind, "add", format!("{label_add} {q} {}", x.name), Some(&x.name), None, Some(q)));
+                }
+                Some(y) if (y.qty - x.qty).abs() > 1e-9 => {
+                    let (f, t) = (fmt_qty(y.qty, &y.unit), fmt_qty(x.qty, &x.unit));
+                    out.push(change(kind, "qty", format!("{}: {f} → {t}", x.name), Some(&x.name), Some(f), Some(t)));
+                }
                 _ => {}
             }
         }
         for y in a {
             if !b.iter().any(|x| x.name == y.name) {
-                out.push(Change { kind: kind.into(), text: format!("{label_rm} {} {}", fmt_qty(y.qty, &y.unit), y.name) });
+                let q = fmt_qty(y.qty, &y.unit);
+                out.push(change(kind, "remove", format!("{label_rm} {q} {}", y.name), Some(&y.name), Some(q), None));
             }
         }
     };
     diff_list("requirement", &prev.requirements, &cur.requirements, &mut out);
     diff_list("reward", &prev.rewards, &cur.rewards, &mut out);
     if prev.rep_gained != cur.rep_gained {
-        out.push(Change { kind: "rep".into(), text: format!("Reputação: +{} → +{}", prev.rep_gained, cur.rep_gained) });
+        out.push(change("rep", "rep", format!("Reputação: +{} → +{}", prev.rep_gained, cur.rep_gained), None, Some(prev.rep_gained.to_string()), Some(cur.rep_gained.to_string())));
     }
     if prev.min_rep != cur.min_rep {
         let f = |v: Option<i64>| v.map(|x| x.to_string()).unwrap_or_else(|| "nenhuma".into());
-        out.push(Change { kind: "rep".into(), text: format!("Rep mínima: {} → {}", f(prev.min_rep), f(cur.min_rep)) });
+        out.push(change("rep", "min_rep", format!("Rep mínima: {} → {}", f(prev.min_rep), f(cur.min_rep)), None, prev.min_rep.map(|x| x.to_string()), cur.min_rep.map(|x| x.to_string())));
     }
     if prev.once_only != cur.once_only {
-        out.push(Change { kind: "other".into(), text: if cur.once_only { "Passou a ser única".into() } else { "Deixou de ser única (repetível)".into() } });
+        let text = if cur.once_only { "Passou a ser única" } else { "Deixou de ser única (repetível)" };
+        out.push(change("other", "once", text.into(), None, None, Some(if cur.once_only { "once" } else { "repeatable" }.into())));
     }
     out
 }
 
-/// Rows describing one dataset, ready to be recorded.
 pub fn dataset_rows(ds: &WikeloDataset) -> (BuildSeen, Vec<SeenRow>) {
     let build = BuildSeen {
         version: ds.build.version.clone(),
@@ -468,6 +493,8 @@ mod tests {
         assert_eq!(wn.changed_contracts[0].id, "b");
         assert_eq!(wn.changed_contracts[0].changes.len(), 1);
         assert_eq!(wn.changed_contracts[0].changes[0].text, "Favor: 1× → 5×");
+        let ch = &wn.changed_contracts[0].changes[0];
+        assert_eq!((ch.kind.as_str(), ch.op.as_str(), ch.name.as_deref(), ch.from.as_deref(), ch.to.as_deref()), ("requirement", "qty", Some("Favor"), Some("1×"), Some("5×")));
         assert_eq!(wn.removed.len(), 1);
         assert_eq!(wn.removed[0].key, "gone");
         assert_eq!(wn.first_seen.get("c").map(String::as_str), Some("4.10.2"));
