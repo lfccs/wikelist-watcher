@@ -9,22 +9,30 @@
 //! stop file; `status` checks the pid file).
 
 use std::io::Write;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
+use wikelo_core::{GIT_COMMIT, PKG_VERSION};
 use wikelo_log::{Tailer, TailerConfig, TrackerOutput};
 
 /// How often the watcher tells the server it is alive when nothing happens.
 const HEARTBEAT: Duration = Duration::from_secs(20);
 /// How often installed game versions are compared with the server's.
 const DATA_CHECK_EVERY: Duration = Duration::from_secs(3600);
+/// How often the server is asked which watcher release is the newest.
+const UPDATE_CHECK_EVERY: Duration = Duration::from_secs(24 * 3600);
 /// A Game.log written more recently than this means the game is running.
 const GAME_ACTIVE_WINDOW: Duration = Duration::from_secs(120);
 const POLL: Duration = Duration::from_millis(750);
+/// `watcher.log` is rotated to `watcher.log.1` past this size.
+const LOG_MAX: u64 = 2 * 1024 * 1024;
+/// The daemon looks at the log size every this many lines, and every five minutes regardless.
+const ROTATE_EVERY_LINES: u32 = 200;
+const ROTATE_EVERY: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentConfig {
@@ -73,6 +81,48 @@ pub fn log_path() -> PathBuf {
     data_dir().join("watcher.log")
 }
 
+/// Rename `watcher.log` to `watcher.log.1` once it is past `max` (the previous `.1` is
+/// replaced) and point this process's stdout/stderr at a fresh file, so the daemon's own
+/// `say!` lines and the tracing output keep going into the new one. Rust re-reads the
+/// standard handles on every write, which is what makes the switch invisible to the
+/// callers. The rename works while the file is open because Rust opens with
+/// `FILE_SHARE_DELETE`. Returns whether it rotated.
+pub fn rotate_log_if_big(path: &Path, max: u64) -> std::io::Result<bool> {
+    if std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) <= max {
+        return Ok(false);
+    }
+    let old = path.with_extension("log.1");
+    let _ = std::fs::remove_file(&old);
+    std::fs::rename(path, &old)?;
+    let fresh = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    // Only the daemon's std streams are the log; anything else (tests, `watch` in a console)
+    // keeps writing where it was.
+    #[cfg(windows)]
+    if DAEMON.load(Ordering::Relaxed) {
+        redirect_std(&fresh)?;
+    }
+    drop(fresh);
+    Ok(true)
+}
+
+/// Make `file` the process's stdout and stderr (the daemon has no console; they were the log).
+#[cfg(windows)]
+fn redirect_std(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Console::{STD_ERROR_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle};
+    // The handles must outlive this call: one clone per stream, deliberately leaked.
+    let out = file.try_clone()?;
+    let err = file.try_clone()?;
+    // SAFETY: plain Win32 calls on handles this process owns and keeps open.
+    unsafe {
+        SetStdHandle(STD_OUTPUT_HANDLE, out.as_raw_handle() as _);
+        SetStdHandle(STD_ERROR_HANDLE, err.as_raw_handle() as _);
+    }
+    std::mem::forget(out);
+    std::mem::forget(err);
+    Ok(())
+}
+
 /// Small JSON the background watcher keeps current for the window.
 pub fn status_path() -> PathBuf {
     data_dir().join("watcher.status.json")
@@ -112,6 +162,14 @@ pub struct DaemonStatus {
     /// Last game-data check result (one line).
     pub data_check: Option<String>,
     pub share_data: bool,
+    /// What this daemon runs.
+    #[serde(default)]
+    pub version: String,
+    /// A newer release the server told us about (version and its download page).
+    #[serde(default)]
+    pub latest_version: Option<String>,
+    #[serde(default)]
+    pub update_url: Option<String>,
 }
 
 impl DaemonStatus {
@@ -163,8 +221,21 @@ fn time_now() -> String {
     format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second())
 }
 
+/// Lines written so far, and whether this process is the daemon (its stderr is the log file).
+static LINES: AtomicU32 = AtomicU32::new(0);
+static DAEMON: AtomicBool = AtomicBool::new(false);
+
+/// One timestamped line on stderr (the console, or `watcher.log` in the daemon, which also
+/// rotates the log every [`ROTATE_EVERY_LINES`] lines).
+pub(crate) fn emit(args: std::fmt::Arguments<'_>) {
+    eprintln!("[{}] {}", time_now(), args);
+    if DAEMON.load(Ordering::Relaxed) && LINES.fetch_add(1, Ordering::Relaxed) % ROTATE_EVERY_LINES == ROTATE_EVERY_LINES - 1 {
+        let _ = rotate_log_if_big(&log_path(), LOG_MAX);
+    }
+}
+
 macro_rules! say {
-    ($($arg:tt)*) => { eprintln!("[{}] {}", time_now(), format!($($arg)*)) };
+    ($($arg:tt)*) => { $crate::agent::emit(format_args!($($arg)*)) };
 }
 
 // ----- HTTP client ------------------------------------------------------------------
@@ -180,7 +251,23 @@ struct Batch<'a> {
     channel: &'a str,
     host: &'a str,
     share_data: bool,
+    /// So the site can say when this watcher is older than the latest release.
+    version: &'static str,
+    commit: &'static str,
     events: Vec<AgentEvent<'a>>,
+}
+
+/// `GET /api/watcher/latest`: the newest release the server knows of.
+#[derive(Deserialize)]
+struct LatestResponse {
+    latest: Option<LatestRelease>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LatestRelease {
+    pub version: String,
+    #[serde(default)]
+    pub url: String,
 }
 
 #[derive(Deserialize)]
@@ -248,8 +335,32 @@ impl From<ureq::Error> for SendError {
     }
 }
 
+/// Statuses are not errors here: `check` reads the server's own message out of a refusal.
 fn http() -> ureq::Agent {
-    ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(60))).build().into()
+    ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(60))).http_status_as_error(false).build().into()
+}
+
+/// The server's `{ "error": … }` text, or `HTTP <status>` when the body has none.
+pub(crate) fn server_error(status: u16, body: &[u8]) -> String {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| format!("HTTP {status}"))
+}
+
+/// 401 → `Unauthorized`, 409 → `NoData`, any other 4xx/5xx → `Rejected` with the server's words.
+fn check(mut res: ureq::http::Response<ureq::Body>) -> Result<ureq::http::Response<ureq::Body>, SendError> {
+    let status = res.status().as_u16();
+    if status < 400 {
+        return Ok(res);
+    }
+    let body = res.body_mut().read_to_vec().unwrap_or_default();
+    Err(match status {
+        401 => SendError::Unauthorized,
+        409 => SendError::NoData,
+        _ => SendError::Rejected(server_error(status, &body)),
+    })
 }
 
 #[derive(Clone)]
@@ -277,14 +388,21 @@ impl Client {
         if self.token.is_empty() {
             return Ok(None);
         }
-        let mut res = self.http.get(self.url("/api/auth/me")).header("Authorization", &self.auth()).call()?;
+        let mut res = check(self.http.get(self.url("/api/auth/me")).header("Authorization", &self.auth()).call()?)?;
         let me: Me = res.body_mut().read_json().map_err(|e| SendError::Other(e.to_string()))?;
         Ok(me.account.map(|a| if a.display_name.is_empty() { a.handle } else { a.display_name }))
     }
 
     fn send(&self, channel: &str, host: &str, share_data: bool, events: &[(bool, TrackerOutput)]) -> Result<Ack, SendError> {
-        let body = Batch { channel, host, share_data, events: events.iter().map(|(replay, event)| AgentEvent { replay: *replay, event }).collect() };
-        let mut res = self.http.post(self.url("/api/agent/events")).header("Authorization", &self.auth()).send_json(&body)?;
+        let body = Batch {
+            channel,
+            host,
+            share_data,
+            version: PKG_VERSION,
+            commit: GIT_COMMIT,
+            events: events.iter().map(|(replay, event)| AgentEvent { replay: *replay, event }).collect(),
+        };
+        let mut res = check(self.http.post(self.url("/api/agent/events")).header("Authorization", &self.auth()).send_json(&body)?)?;
         res.body_mut().read_json().map_err(|e| SendError::Other(e.to_string()))
     }
 
@@ -293,50 +411,51 @@ impl Client {
     }
 
     fn known_datasets(&self) -> Result<Vec<(String, String)>, SendError> {
-        let mut res = self.http.get(self.url("/api/agent/datasets")).header("Authorization", &self.auth()).call()?;
+        let mut res = check(self.http.get(self.url("/api/agent/datasets")).header("Authorization", &self.auth()).call()?)?;
         let k: KnownDatasets = res.body_mut().read_json().map_err(|e| SendError::Other(e.to_string()))?;
         Ok(k.known.into_iter().map(|d| (d.channel.to_ascii_uppercase(), d.version)).collect())
+    }
+
+    /// The newest watcher release the server knows of (`None` when it has not looked yet).
+    fn latest_release(&self) -> Result<Option<LatestRelease>, SendError> {
+        let mut res = check(self.http.get(self.url("/api/watcher/latest")).call()?)?;
+        let r: LatestResponse = res.body_mut().read_json().map_err(|e| SendError::Other(e.to_string()))?;
+        Ok(r.latest)
     }
 
     /// Upload a bundle. The server validates it in quarantine; a refusal (4xx) comes back
     /// as `Rejected` with the server's reason.
     fn upload_bundle(&self, bytes: &[u8]) -> Result<UploadReport, SendError> {
-        let mut res = self
-            .http
-            .post(self.url("/api/bundles"))
-            .config()
-            .http_status_as_error(false)
-            .build()
-            .header("Authorization", &self.auth())
-            .header("Content-Type", "application/zip")
-            .send(bytes)?;
-        let status = res.status().as_u16();
-        if status == 401 {
-            return Err(SendError::Unauthorized);
-        }
-        if status >= 400 {
-            let msg = res
-                .body_mut()
-                .read_json::<serde_json::Value>()
-                .ok()
-                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
-                .unwrap_or_else(|| format!("HTTP {status}"));
-            return Err(SendError::Rejected(msg));
-        }
+        let mut res = check(self.http.post(self.url("/api/bundles")).header("Authorization", &self.auth()).header("Content-Type", "application/zip").send(bytes)?)?;
         res.body_mut().read_json().map_err(|e| SendError::Other(e.to_string()))
     }
+}
+
+/// A release newer than this executable, as the server reports it: `(version, download page)`.
+pub fn update_available(cfg: &AgentConfig) -> Option<(String, String)> {
+    let r = Client::new(&cfg.server, &cfg.token).latest_release().ok().flatten()?;
+    wikelo_core::version::is_newer(&r.version, PKG_VERSION).then_some((r.version, r.url))
 }
 
 /// Exchange handle + password for a long-lived watcher token. Returns `(token, display name)`.
 pub fn login(server: &str, handle: &str, password: &str) -> anyhow::Result<(String, String)> {
     let server = normalize_server(server);
     let url = format!("{server}/api/auth/agent-login");
-    let mut res = match http().post(&url).send_json(serde_json::json!({ "handle": handle, "password": password })) {
-        Ok(r) => r,
-        Err(ureq::Error::StatusCode(401)) => bail!("usuário ou senha incorretos"),
-        Err(ureq::Error::StatusCode(404)) => bail!("este servidor não tem suporte ao watcher (atualize o servidor)"),
-        Err(e) => bail!("não foi possível falar com {server}: {e}"),
-    };
+    let mut res = http()
+        .post(&url)
+        .send_json(serde_json::json!({ "handle": handle, "password": password }))
+        .map_err(|e| anyhow::anyhow!("não foi possível falar com {server}: {e}"))?;
+    let status = res.status().as_u16();
+    match status {
+        401 => bail!("usuário ou senha incorretos"),
+        404 => bail!("este servidor não tem suporte ao watcher (atualize o servidor)"),
+        s if s >= 400 => {
+            // 403 (conta desativada), 429 (muitas tentativas), …: the server says why.
+            let body = res.body_mut().read_to_vec().unwrap_or_default();
+            bail!("{}", server_error(s, &body));
+        }
+        _ => {}
+    }
     let r: LoginResponse = res.body_mut().read_json().context("resposta inesperada do servidor")?;
     let name = if r.account.display_name.is_empty() { r.account.handle } else { r.account.display_name };
     Ok((r.token, name))
@@ -578,10 +697,18 @@ pub fn run(opts: WatchOptions) -> anyhow::Result<()> {
 
     if opts.daemon {
         lower_priority();
+        DAEMON.store(true, Ordering::Relaxed);
+        // The default hook prints the panic; this one dates it and keeps it in the log's format.
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            previous(info);
+            say!("panic: {info}");
+        }));
         std::fs::write(pid_path(), std::process::id().to_string())?;
         let _ = std::fs::remove_file(stop_path());
     }
     let _ = std::fs::remove_file(check_path());
+    say!("wikelo-watcher {PKG_VERSION} ({GIT_COMMIT})");
     say!("conectado a {} como {name}", cfg.server);
     say!("acompanhando {} em {}", install.channel, install.game_log_path.display());
     say!(
@@ -611,6 +738,7 @@ pub fn run(opts: WatchOptions) -> anyhow::Result<()> {
         server: cfg.server.clone(),
         channel: channel.clone(),
         share_data: share,
+        version: PKG_VERSION.to_string(),
         ..Default::default()
     };
     status.write();
@@ -623,6 +751,8 @@ pub fn run(opts: WatchOptions) -> anyhow::Result<()> {
     let mut announced_replay = false;
     let mut paused = false;
     let mut last_data_check: Option<Instant> = None;
+    let mut last_update_check: Option<Instant> = None;
+    let mut last_rotate = Instant::now();
     let checking: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
     let check_result: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let mut cfg_mtime = config_mtime();
@@ -686,7 +816,13 @@ pub fn run(opts: WatchOptions) -> anyhow::Result<()> {
                 let flag = checking.clone();
                 let result = check_result.clone();
                 std::thread::spawn(move || {
-                    let summary = data_check(&c, &n, &h);
+                    // A panic inside the extractor (a new game build, say) must not leave the
+                    // check marked as running forever, nor take the daemon down with it.
+                    let summary = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| data_check(&c, &n, &h))).unwrap_or_else(|p| {
+                        let msg = p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
+                        say!("falha interna na checagem de dados: {msg}");
+                        format!("{}: falha interna na checagem ({msg})", clock())
+                    });
                     *result.lock().unwrap() = Some(summary);
                     *flag.lock().unwrap() = false;
                 });
@@ -695,6 +831,25 @@ pub fn run(opts: WatchOptions) -> anyhow::Result<()> {
         if let Some(summary) = check_result.lock().unwrap().take() {
             status.data_check = Some(summary);
             dirty = true;
+        }
+
+        // Once a day (and right after start): is there a newer release? The server knows.
+        if last_update_check.is_none_or(|t| t.elapsed() > UPDATE_CHECK_EVERY) {
+            last_update_check = Some(Instant::now());
+            if let Ok(Some(r)) = client.latest_release()
+                && wikelo_core::version::is_newer(&r.version, PKG_VERSION)
+            {
+                if status.latest_version.as_deref() != Some(r.version.as_str()) {
+                    say!("versão {} do wikelo-watcher disponível: {}", r.version, r.url);
+                }
+                status.latest_version = Some(r.version);
+                status.update_url = Some(r.url);
+                dirty = true;
+            }
+        }
+        if opts.daemon && last_rotate.elapsed() > ROTATE_EVERY {
+            last_rotate = Instant::now();
+            let _ = rotate_log_if_big(&log_path(), LOG_MAX);
         }
 
         let heartbeat_due = last_ok.elapsed() > HEARTBEAT;
@@ -750,7 +905,13 @@ pub fn run(opts: WatchOptions) -> anyhow::Result<()> {
                 status.last_error = Some(format!("o servidor ainda não tem os dados do canal {channel}"));
                 backoff = Duration::from_secs(20);
             }
-            Err(SendError::Rejected(m)) | Err(SendError::Other(m)) => {
+            Err(SendError::Rejected(m)) => {
+                // The server answered and said no (a rate limit, a disabled account…): its words.
+                backoff = (if backoff.is_zero() { Duration::from_secs(2) } else { backoff * 2 }).min(Duration::from_secs(60));
+                say!("o servidor recusou o envio ({m}); nova tentativa em {} s", backoff.as_secs());
+                status.last_error = Some(format!("o servidor recusou: {m}"));
+            }
+            Err(SendError::Other(m)) => {
                 backoff = (if backoff.is_zero() { Duration::from_secs(2) } else { backoff * 2 }).min(Duration::from_secs(60));
                 say!("falha ao enviar ({m}); nova tentativa em {} s", backoff.as_secs());
                 status.last_error = Some(format!("sem contato com o servidor ({m})"));
@@ -818,8 +979,11 @@ pub fn start_background() -> anyhow::Result<u32> {
     if let Some(d) = log.parent() {
         std::fs::create_dir_all(d)?;
     }
-    if std::fs::metadata(&log).map(|m| m.len() > 2 * 1024 * 1024).unwrap_or(false) {
-        let _ = std::fs::remove_file(&log);
+    // The previous run's log survives as `watcher.log.1` instead of being thrown away.
+    if std::fs::metadata(&log).map(|m| m.len() > LOG_MAX).unwrap_or(false) {
+        let old = log.with_extension("log.1");
+        let _ = std::fs::remove_file(&old);
+        let _ = std::fs::rename(&log, &old);
     }
     let out = std::fs::OpenOptions::new().create(true).append(true).open(&log)?;
     let err = out.try_clone()?;
@@ -913,4 +1077,39 @@ pub fn set_autostart(_on: bool) -> anyhow::Result<()> {
 #[cfg(not(windows))]
 pub fn autostart_enabled() -> bool {
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_error_prefers_the_json_message() {
+        assert_eq!(server_error(429, br#"{"error":"muitas tentativas; tente de novo em 3 min","code":"rate_limited"}"#), "muitas tentativas; tente de novo em 3 min");
+        assert_eq!(server_error(403, br#"{"error":"conta desativada"}"#), "conta desativada");
+    }
+
+    #[test]
+    fn server_error_falls_back_to_http_code() {
+        assert_eq!(server_error(502, b"<html>bad gateway</html>"), "HTTP 502");
+        assert_eq!(server_error(500, br#"{"error":""}"#), "HTTP 500");
+        assert_eq!(server_error(404, b""), "HTTP 404");
+    }
+
+    #[test]
+    fn rotates_once_over_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("watcher.log");
+        std::fs::write(&log, vec![b'x'; 2049]).unwrap();
+        assert!(rotate_log_if_big(&log, 2048).unwrap(), "past the limit: rotated");
+        let old = dir.path().join("watcher.log.1");
+        assert_eq!(std::fs::metadata(&old).unwrap().len(), 2049, "the old lines moved to .1");
+        assert_eq!(std::fs::metadata(&log).unwrap().len(), 0, "a fresh, empty log");
+        assert!(!rotate_log_if_big(&log, 2048).unwrap(), "under the limit: nothing happens");
+        // A second rotation replaces the previous `.1`.
+        std::fs::write(&log, vec![b'y'; 3000]).unwrap();
+        assert!(rotate_log_if_big(&log, 2048).unwrap());
+        assert_eq!(std::fs::metadata(&old).unwrap().len(), 3000);
+        assert!(rotate_log_if_big(dir.path().join("missing.log").as_path(), 10).map(|r| !r).unwrap_or(true), "no file: nothing to rotate");
+    }
 }

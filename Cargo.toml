@@ -8,7 +8,7 @@ members = ["crates/*"]
 # these crates as path dependencies from its `watcher/` subtree.
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -43,4 +43,9 @@ opt-level = 3
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+# One codegen unit and fat LTO buy a smaller, slightly faster exe for a longer release build;
+# `strip` drops the symbol table (the .pdb keeps the debug info anyway). No `panic = "abort"`:
+# the hourly data check runs on its own thread and a panic there must not take the daemon down.
+lto = "fat"
+codegen-units = 1
+strip = true

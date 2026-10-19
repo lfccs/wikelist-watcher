@@ -34,6 +34,8 @@ enum Done {
     Stopped(Result<bool, String>),
     Autostart(bool, Result<(), String>),
     LoggedOut,
+    /// A newer release the server knows of: (version, download page).
+    Update(Option<(String, String)>),
 }
 
 pub fn run() -> anyhow::Result<()> {
@@ -122,6 +124,8 @@ struct App {
     busy: Option<String>,
     /// (is error, text) shown under the account box.
     msg: Option<(bool, String)>,
+    /// A newer release than this executable, as the daemon or the start-up check reported it.
+    update: Option<(String, String)>,
     tx: Sender<Done>,
     rx: Receiver<Done>,
     /// Signed-in state the window is currently sized for.
@@ -146,18 +150,21 @@ impl App {
             last_poll: Instant::now() - Duration::from_secs(10),
             busy: None,
             msg: None,
+            update: None,
             tx,
             rx,
             sized_for,
         };
         app.poll();
         if app.signed_in() {
-            // Saved session: make sure the server still accepts it.
+            // Saved session: make sure the server still accepts it, and ask it for the newest
+            // release while there (the daemon does the same daily; this covers a stopped one).
             let cfg = app.cfg.clone();
             let tx = app.tx.clone();
             app.busy = Some("verificando a sessão…".into());
             std::thread::spawn(move || {
                 let _ = tx.send(Done::Session(agent::session_name(&cfg).map_err(|e| format!("{e:?}"))));
+                let _ = tx.send(Done::Update(agent::update_available(&cfg)));
             });
         }
         app
@@ -172,6 +179,11 @@ impl App {
         self.last_poll = Instant::now();
         self.running = agent::running_pid();
         self.status = if self.running.is_some() { agent::read_status() } else { None };
+        if let Some(s) = &self.status
+            && let (Some(v), Some(u)) = (&s.latest_version, &s.update_url)
+        {
+            self.update = Some((v.clone(), u.clone()));
+        }
         self.log_tail = tail(&agent::log_path(), LOG_TAIL_BYTES);
     }
 
@@ -219,6 +231,13 @@ impl App {
                 Done::LoggedOut => {
                     self.cfg = AgentConfig { server: self.cfg.server.clone(), handle: self.cfg.handle.clone(), ..Default::default() };
                     self.msg = None;
+                }
+                Done::Update(u) => {
+                    if u.is_some() {
+                        self.update = u;
+                    }
+                    // Not a user action: the spinner belongs to the session check that preceded it.
+                    continue;
                 }
             }
             self.poll();
@@ -303,6 +322,14 @@ impl App {
                 }
             });
         });
+        if let Some((version, url)) = self.update.clone() {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("Versão {version} do wikelo-watcher disponível (esta é a {})", wikelo_core::PKG_VERSION)).color(WARN));
+                if ui.button("Abrir download").on_hover_text(url.clone()).clicked() {
+                    let _ = open::that_detached(&url);
+                }
+            });
+        }
     }
 
     fn account(&mut self, ui: &mut egui::Ui) {

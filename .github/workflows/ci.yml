@@ -1,5 +1,8 @@
-# Every push: clippy without warnings and the tests with the committed Cargo.lock, dependency
-# advisories, and a short fuzz run over the parsers that read other people's data.
+# Every push: clippy without warnings and the tests with the committed Cargo.lock (Windows,
+# where the exe lives), the three crates the server shares also on Linux and on the oldest
+# Rust they promise (`rust-version`), dependency advisories, and a short fuzz run over the
+# parsers that read other people's data. No `cargo fmt` step: the code was never formatted
+# with rustfmt and a formatting-only commit would hide history; do that once, on its own.
 name: ci
 
 on:
@@ -19,6 +22,27 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Tests
         run: cargo test --workspace --locked
+
+  # The server (lfccs/wikelist) uses wikelo-core, wikelo-log and wikelo-install on Linux.
+  shared-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain (rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Tests of the shared crates
+        run: cargo test -p wikelo-core -p wikelo-log -p wikelo-install --locked
+
+  # `rust-version` in Cargo.toml is a promise; this is where it is kept.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - name: Shared crates build on the minimum supported Rust
+        run: cargo +1.88.0 check -p wikelo-core -p wikelo-log -p wikelo-install --locked
 
   audit:
     runs-on: ubuntu-latest

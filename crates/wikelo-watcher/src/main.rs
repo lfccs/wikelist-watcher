@@ -233,6 +233,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Some(Cmd::Status) => {
+            eprintln!("wikelo-watcher {} ({})", wikelo_core::PKG_VERSION, wikelo_core::GIT_COMMIT);
             match agent::running_pid() {
                 Some(pid) => eprintln!("watcher rodando em segundo plano (pid {pid}); log em {}", agent::log_path().display()),
                 None => eprintln!("watcher parado."),
@@ -261,6 +262,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     s.last_ok.map(|t| format!(" · último contato {t}")).unwrap_or_default(),
                     s.data_check.map(|d| format!(" · dados do jogo: {d}")).unwrap_or_default()
                 );
+                if let (Some(v), Some(u)) = (s.latest_version, s.update_url) {
+                    eprintln!("atualização disponível: {v} → {u}");
+                }
             }
             Ok(())
         }

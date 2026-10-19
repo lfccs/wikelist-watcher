@@ -13,8 +13,12 @@ Em [Releases](https://github.com/lfccs/wikelist-watcher/releases) está o `wikel
 
 ```powershell
 Get-FileHash .\wikelo-watcher.exe -Algorithm SHA256   # tem que bater com SHA256SUMS.txt
+gh attestation verify .\wikelo-watcher.exe --repo lfccs/wikelist-watcher   # GitHub assina cada build (precisa do GitHub CLI)
 .\wikelo-watcher.exe hash                              # mostra o commit embutido no binário
+.\wikelo-watcher.exe status                            # mostra a versão e avisa quando há uma mais nova
 ```
+
+O exe não tem assinatura de código (SmartScreen pode avisar na primeira execução: *Mais informações → Executar assim mesmo*); a atestação acima é a prova de origem. O watcher pergunta ao servidor, uma vez por dia, qual é a release mais recente e avisa na janela e no `status` quando há uma mais nova; o site mostra o mesmo em **Dados → Watcher**.
 
 Dois cliques abrem a **janela de opções**: servidor, usuário e senha da conta do site, **Iniciar/Parar**, o canal seguido (LIVE, PTU…), **Iniciar junto com o Windows** e a opção **Enviar também os dados do jogo quando sair uma versão nova**. Ao entrar, o watcher já começa a rodar em segundo plano; a janela pode ser fechada.
 

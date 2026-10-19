@@ -1,9 +1,12 @@
 # Builds `wikelo-watcher.exe` from this public source on GitHub's runners and publishes it
-# with its SHA-256, so players can check that the file they run is the one built from the
-# tagged commit. The commit is stamped into the binary (`wikelo-watcher hash` prints it).
+# with its SHA-256 and a signed build attestation, so players can check that the file they
+# run is the one built from the tagged commit. The commit is stamped into the binary
+# (`wikelo-watcher hash` prints it) and the version the exe reports to the server is the
+# one in Cargo.toml, so the tag has to match it.
 #
-# To release: create a tag `vX.Y.Z` (GitHub → Releases → "Draft a new release" with a new
-# tag also works); the workflow attaches the exe and SHA256SUMS.txt to that release.
+# To release: bump `version` in Cargo.toml, commit, then create a tag `vX.Y.Z` (GitHub →
+# Releases → "Draft a new release" with a new tag also works); the workflow attaches the exe,
+# SHA256SUMS.txt and the attestation to that release.
 name: release
 
 on:
@@ -12,6 +15,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   watcher:
@@ -21,6 +26,12 @@ jobs:
       - name: Toolchain (rust-toolchain.toml)
         run: rustup show
       - uses: Swatinem/rust-cache@v2
+      - name: Tag matches Cargo.toml
+        shell: pwsh
+        run: |
+          $v = (cargo pkgid -p wikelo-watcher) -replace '.*[#@]', ''
+          if ("v$v" -ne $env:GITHUB_REF_NAME) { Write-Error "tag $env:GITHUB_REF_NAME, but Cargo.toml says $v"; exit 1 }
+          "version $v"
       - name: Build
         run: cargo build --release --locked -p wikelo-watcher
       - name: Checksums
@@ -31,6 +42,10 @@ jobs:
           $h = (Get-FileHash dist\wikelo-watcher.exe -Algorithm SHA256).Hash.ToLower()
           "$h  wikelo-watcher.exe" | Out-File -Encoding ascii dist\SHA256SUMS.txt
           Get-Content dist\SHA256SUMS.txt
+      - name: Build provenance (signed by GitHub; verify with `gh attestation verify`)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/wikelo-watcher.exe
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
@@ -39,5 +54,6 @@ jobs:
             dist/SHA256SUMS.txt
           body: |
             `wikelo-watcher.exe` compilado pelo GitHub Actions a partir deste commit.
-            Confira o arquivo baixado: `Get-FileHash wikelo-watcher.exe -Algorithm SHA256` deve bater com `SHA256SUMS.txt`.
-            `wikelo-watcher hash` mostra o commit embutido e o hash dos dados extraídos.
+            Confira o arquivo baixado: `Get-FileHash wikelo-watcher.exe -Algorithm SHA256` deve bater com `SHA256SUMS.txt`,
+            e `gh attestation verify .\wikelo-watcher.exe --repo lfccs/wikelist-watcher` confirma que foi este repositório que o compilou.
+            `wikelo-watcher hash` mostra o commit embutido e o hash dos dados extraídos; `wikelo-watcher status` mostra a versão.
