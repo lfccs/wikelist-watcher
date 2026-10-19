@@ -6,6 +6,7 @@ pub mod compute;
 pub mod dataset;
 pub mod history;
 pub mod validate;
+pub mod version;
 
 pub use compute::*;
 pub use dataset::*;
