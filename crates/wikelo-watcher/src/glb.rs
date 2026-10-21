@@ -1,6 +1,6 @@
-//! On-demand 3D export (GLB) of an entity class — ship, armor piece, weapon —
-//! through `starbreaker-3d`, so the UI can show a real model and render its
-//! own thumbnail when the game ships no static picture.
+//! On-demand 3D export (GLB) of an entity class — ship, armor piece, weapon, carryable,
+//! resource thumbnail — through `starbreaker-3d`, so the UI can show a real model and
+//! render its own thumbnail the way the game does for its inventory icons.
 
 use std::path::Path;
 use std::time::Instant;
@@ -25,15 +25,23 @@ pub enum GlbError {
 /// How much of the model to export. Ships are huge; thumbnails only need the hull.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelDetail {
-    /// Full item with attachments, textures at 1/4 resolution (armor, weapons).
+    /// Full item with attachments, textures at 1/4 resolution (weapons, carryables).
     Item,
+    /// Armor as worn: the record's root geometry is the crate the piece ships in, the piece
+    /// itself is the sub-geometry tagged by body ("male" / "female"), a skinned mesh in bind
+    /// pose, upright and facing forward, which is how the game's inventory shows it.
+    Worn,
     /// Exterior only, lower LOD, textures at 1/16 resolution (vehicles).
     VehicleExterior,
 }
 
 impl ModelDetail {
     pub fn for_item_kind(kind: &str) -> Self {
-        if kind == "vehicle" { ModelDetail::VehicleExterior } else { ModelDetail::Item }
+        match kind {
+            "vehicle" => ModelDetail::VehicleExterior,
+            "armor" => ModelDetail::Worn,
+            _ => ModelDetail::Item,
+        }
     }
 
     fn options(self) -> ExportOptions {
@@ -42,6 +50,11 @@ impl ModelDetail {
             ModelDetail::Item => {
                 o.lod_level = 0;
                 o.texture_mip = 1;
+            }
+            ModelDetail::Worn => {
+                o.lod_level = 0;
+                o.texture_mip = 1;
+                o.geometry_tag = Some("male".into());
             }
             ModelDetail::VehicleExterior => {
                 o.include_interior = false;
@@ -88,9 +101,17 @@ impl ModelExporter {
             .ok_or_else(|| GlbError::NotFound(class_name.to_string()))?;
         let idx = EntityIndex::new(&db);
         let tree = resolve_loadout_indexed(&idx, &record);
-        let opts = detail.options();
-        let result = starbreaker_3d::assemble_glb_with_loadout_with_progress(&db, &self.p4k, &record, &tree, &opts, None, None, None, None)
-            .map_err(|e| GlbError::Export(class_name.to_string(), e.to_string()))?;
+        let assemble = |opts: &ExportOptions| starbreaker_3d::assemble_glb_with_loadout_with_progress(&db, &self.p4k, &record, &tree, opts, None, None, None, None);
+        let result = match assemble(&detail.options()) {
+            // Not every armor record carries a body-tagged variant (older pieces, flair): the crate
+            // or prop the record names is still better than nothing.
+            Err(e) if detail == ModelDetail::Worn && e.to_string().contains("geometry variant") => {
+                tracing::info!("GLB {class_name}: sem variante vestida ({e}); exportando a geometria do registro");
+                assemble(&ModelDetail::Item.options())
+            }
+            other => other,
+        }
+        .map_err(|e| GlbError::Export(class_name.to_string(), e.to_string()))?;
         tracing::info!(
             "GLB {class_name}: {} bytes em {:.1}s (geometry {})",
             result.glb.len(),

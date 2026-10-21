@@ -76,6 +76,11 @@ fn main() {
         let mut types = BTreeSet::new();
         walk(&root, "", &needles, &mut hits, &mut types);
         let json = serde_json::to_string(&*root).unwrap_or_default();
+        if std::env::var_os("DCB_DUMP").is_some() {
+            let file = format!("{}.json", name.replace(['\\', '/', ':'], "_"));
+            std::fs::write(&file, serde_json::to_string_pretty(&*root).unwrap_or_default()).expect("write dump");
+            println!("  dumped to {file}");
+        }
         println!("  json size {} bytes · component types: {}", json.len(), types.iter().cloned().collect::<Vec<_>>().join(", "));
         for h in hits.iter().take(40) {
             println!("  {h}");
