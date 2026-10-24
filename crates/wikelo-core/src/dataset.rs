@@ -209,6 +209,19 @@ pub struct Contract {
     pub rewards: Vec<Reward>,
 }
 
+impl Contract {
+    /// Not offered by the game's Wikelo: flagged not-for-release, or a debug name marking it
+    /// DO_NOT_USE or a test. The site hides these by default (`isTestContract` in `web/src`);
+    /// keep the two in step.
+    pub fn is_hidden(&self) -> bool {
+        if self.not_for_release {
+            return true;
+        }
+        let dn = self.debug_name.to_ascii_lowercase();
+        dn.contains("do_not_use") || dn.contains("test")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RepRequirement {
@@ -637,6 +650,15 @@ mod tests {
             Category::Favour
         );
         assert_eq!(Category::derive(None, None, "TheCollector_FoodOrder", &[]), Category::Other);
+    }
+
+    #[test]
+    fn hidden_contracts_are_the_flagged_and_the_test_ones() {
+        let c = |debug_name: &str, not_for_release: bool| Contract { debug_name: debug_name.into(), not_for_release, ..Default::default() };
+        assert!(!c("TheCollector_Favours_PolarisParts", false).is_hidden());
+        assert!(c("TheCollector_Favours_PolarisParts", true).is_hidden(), "not for release");
+        assert!(c("TheCollector_Test", false).is_hidden() && c("TheCollector_TESTING_Ship", false).is_hidden());
+        assert!(c("TheCollector_Vehicle_DO_NOT_USE", false).is_hidden() && c("TheCollector_do_not_use_x", false).is_hidden());
     }
 
     #[test]

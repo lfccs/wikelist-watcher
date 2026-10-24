@@ -241,10 +241,12 @@ pub fn rank_contracts(
     out
 }
 
-/// How many contracts use each item, for the inventory page ("used in N contracts").
+/// How many offered contracts ask for each item, for the inventory page ("used in N contracts").
+/// Hidden contracts (test, DO_NOT_USE, not for release) do not count: an item only they ask for
+/// is nothing to collect, and the inventory's default filter leaves it out.
 pub fn item_usage(dataset: &WikeloDataset) -> HashMap<String, usize> {
     let mut map: HashMap<String, usize> = HashMap::new();
-    for c in &dataset.contracts {
+    for c in dataset.contracts.iter().filter(|c| !c.is_hidden()) {
         let mut seen = HashSet::new();
         for r in &c.requirements {
             collect_item_ids(r, &mut seen);
