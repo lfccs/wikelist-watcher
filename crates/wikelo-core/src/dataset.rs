@@ -220,6 +220,14 @@ impl Contract {
         let dn = self.debug_name.to_ascii_lowercase();
         dn.contains("do_not_use") || dn.contains("test")
     }
+
+    /// Rewards in the order the site shows them: by result and option as the game lists them,
+    /// and inside each by kind, the ship first (`RewardKind::order`), the game's order among
+    /// equals (a weapon before its magazine). The first reward of result 0 is the one the card,
+    /// the page and the link preview lead with, so a ship never hides behind a helmet.
+    pub fn sort_rewards(&mut self) {
+        self.rewards.sort_by_key(|r| (r.result, r.option, r.kind.order()));
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -347,6 +355,22 @@ pub enum RewardKind {
     Other,
 }
 
+impl RewardKind {
+    /// Display order of a contract's rewards: the ship first, then weapons and armor, the rest,
+    /// blueprints; money and favours last.
+    pub fn order(self) -> u8 {
+        match self {
+            RewardKind::Vehicle => 0,
+            RewardKind::Weapon => 1,
+            RewardKind::Armor => 2,
+            RewardKind::Other => 3,
+            RewardKind::Blueprint => 4,
+            RewardKind::Favour => 5,
+            RewardKind::Currency => 6,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Reward {
@@ -465,6 +489,14 @@ pub fn instance_base(name: &str) -> &str {
 }
 
 impl WikeloDataset {
+    /// Every contract's rewards in display order (`Contract::sort_rewards`); the server does it
+    /// on load, so datasets extracted before this order existed read the same.
+    pub fn sort_rewards(&mut self) {
+        for c in &mut self.contracts {
+            c.sort_rewards();
+        }
+    }
+
     /// Rewards of a non-Wikelo mission, matched by contract GUID first, then by debug name
     /// (case-insensitive, with or without the `_<n>` instance index Game.log may append).
     pub fn mission_rewards_for(&self, contract_id: Option<&str>, debug_name: Option<&str>) -> Vec<&MissionReward> {
@@ -579,6 +611,35 @@ impl Category {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rewards_lead_with_the_ship() {
+        let reward = |result: u32, name: &str, kind: RewardKind| Reward {
+            result,
+            option: 0,
+            weight: 1.0,
+            owner_only: true,
+            item_id: None,
+            class_name: None,
+            name: name.into(),
+            qty: 1,
+            kind,
+            on_accept: false,
+        };
+        let mut c = Contract {
+            rewards: vec![
+                reward(0, "Helmet", RewardKind::Armor),
+                reward(0, "Core", RewardKind::Armor),
+                reward(0, "LMG", RewardKind::Weapon),
+                reward(0, "Wolf", RewardKind::Vehicle),
+                reward(1, "Blueprint", RewardKind::Blueprint),
+            ],
+            ..Default::default()
+        };
+        c.sort_rewards();
+        let names: Vec<&str> = c.rewards.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["Wolf", "LMG", "Helmet", "Core", "Blueprint"]);
+    }
 
     fn reward(kind: RewardKind) -> Reward {
         Reward {
