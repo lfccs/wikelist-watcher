@@ -1,6 +1,8 @@
 //! Data.p4k -> Game2.dcb -> `ContractGenerator.TheCollector` -> normalized dataset.
 
+pub mod drops;
 pub mod glb;
+pub mod missions;
 pub mod bundle;
 pub mod images;
 pub mod sign;
@@ -146,6 +148,9 @@ pub fn extract(install: &InstallInfo, on_progress: &dyn Fn(ExtractProgress)) -> 
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_default();
     let mut dataset = normalize::Normalizer::new(&mut resolver, &loc).run(build, generated_at)?;
+    // What the ace pilot may bring into other givers' missions (a chance, not a reward).
+    dataset.mission_drops = drops::ace_pilot_drops(&mut resolver, &data.p4k, &dataset.items, &dataset.contracts, &mut dataset.warnings);
+    dataset.missions = missions::load_missions(&mut resolver, &loc, &dataset.mission_rewards, &dataset.mission_drops, &mut dataset.warnings);
     // Provenance: which build of this code read which exact game files. Two players on the
     // same build must report the same hashes, and the server shows them next to the dataset.
     dataset.extractor = Some(wikelo_core::ExtractorInfo {

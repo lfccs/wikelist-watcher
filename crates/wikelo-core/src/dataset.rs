@@ -38,6 +38,14 @@ pub struct WikeloDataset {
     /// credit the inventory when such a mission completes.
     #[serde(default)]
     pub mission_rewards: Vec<MissionReward>,
+    /// Items a mission *may* drop (the ace pilot's helmet and medals), with the chance. Never
+    /// credited automatically: the site lists the missions on the item, nothing more.
+    #[serde(default)]
+    pub mission_drops: Vec<MissionDrop>,
+    /// The other givers' missions named by `mission_rewards` and `mission_drops`: title,
+    /// giver, system, reputation asked, offered or not. One per contract id.
+    #[serde(default)]
+    pub missions: Vec<MissionInfo>,
     /// Which extractor build produced this dataset and from which game files, so two
     /// extractions can be compared (see `validate::canonical_hash`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -80,6 +88,81 @@ pub struct MissionReward {
     /// (Project Hyperion's recombinant samples). `qty` is per item. The site asks the player.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub one_of: bool,
+}
+
+/// One item the ace pilot may bring into a mission of another contract giver, with the
+/// chance that he shows up there at all (`AcePilotChance` on the contract, 0..=1). What he
+/// wears is there every time he is; what his loot table rolls is one draw, not every time.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MissionDrop {
+    /// Contract definition GUID (`contractDefinitionId` in Game.log).
+    pub contract_id: String,
+    pub debug_name: String,
+    /// Generator record name without the `ContractGenerator.` prefix.
+    pub generator: String,
+    pub item_id: String,
+    pub class_name: String,
+    pub name: String,
+    /// Chance the carrier appears in this mission.
+    pub chance: f64,
+    pub how: DropHow,
+    pub via: DropVia,
+}
+
+/// How the carrier of a [`MissionDrop`] holds the item.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DropHow {
+    /// On the body: there whenever the carrier is.
+    Worn,
+    /// In the loot pool: one draw among the pool, not every time.
+    Loot,
+}
+
+/// A mission of another contract giver, as the player would recognise it in the game: the
+/// shared face of every [`MissionReward`] and [`MissionDrop`] row with the same `id`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MissionInfo {
+    /// Contract definition GUID (`contractDefinitionId` in Game.log).
+    pub id: String,
+    pub debug_name: String,
+    /// Generator record name without the `ContractGenerator.` prefix.
+    pub generator: String,
+    /// Localized title; the debug name when the game has none.
+    pub title: String,
+    /// Localized description without markup; empty when the game has none.
+    pub description_plain: String,
+    /// The faction that offers it (from its reputation prerequisite).
+    pub giver: Option<String>,
+    /// Star system: `Stanton`, `Pyro`, `Nyx`; None when the data does not say.
+    pub system: Option<String>,
+    /// Kind of mission the site groups by: `patrol`, `ambush`, `escort`, `defend`,
+    /// `investigation`, `training`; None when the names say nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
+    pub rep_required: Option<RepRequirement>,
+    /// Reputation paid on success with the giver, when the data says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rep_reward: Option<i64>,
+    /// Contract ids of the missions whose completion unlocks this one (the game chains
+    /// them through completion tags); any of them counts.
+    #[serde(default)]
+    pub requires: Vec<String>,
+    /// An event mission: its mission type is a priority one (RSI Discovery Month, Fleet Week…).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub event: bool,
+    /// Not offered in this build: not-for-release or work-in-progress on the generator or
+    /// the contract. The site hides these.
+    pub disabled: bool,
+}
+
+/// Who carries a [`MissionDrop`] into the mission.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DropVia {
+    AcePilot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -735,6 +818,8 @@ mod tests {
             items: vec![],
             favor_conversions: vec![],
             mission_rewards: vec![],
+            mission_drops: vec![],
+            missions: vec![],
             crafting: vec![],
             warnings: vec![],
             extractor: None,

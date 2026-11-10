@@ -5477,6 +5477,7 @@ dependencies = [
  "sha2",
  "starbreaker-3d",
  "starbreaker-common",
+ "starbreaker-cryxml",
  "starbreaker-datacore",
  "starbreaker-dds",
  "starbreaker-p4k",

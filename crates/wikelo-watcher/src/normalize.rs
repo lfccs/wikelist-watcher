@@ -206,6 +206,8 @@ impl<'r, 'db, 'a> Normalizer<'r, 'db, 'a> {
             crafting,
             warnings,
             mission_rewards,
+            mission_drops: Vec::new(), // filled by `drops` once the contracts and items are known
+            missions: Vec::new(),      // filled by `missions` from the rewards and drops above
             extractor: None,
         })
     }

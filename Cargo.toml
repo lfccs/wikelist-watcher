@@ -32,6 +32,7 @@ starbreaker-datacore = { git = "https://github.com/diogotr7/StarBreaker", rev = 
 starbreaker-common = { git = "https://github.com/diogotr7/StarBreaker", rev = "4aba5e3ea07f2f2a656c67b1d9f06cc8a89a42a6" }
 starbreaker-dds = { git = "https://github.com/diogotr7/StarBreaker", rev = "4aba5e3ea07f2f2a656c67b1d9f06cc8a89a42a6" }
 starbreaker-3d = { git = "https://github.com/diogotr7/StarBreaker", rev = "4aba5e3ea07f2f2a656c67b1d9f06cc8a89a42a6" }
+starbreaker-cryxml = { git = "https://github.com/diogotr7/StarBreaker", rev = "4aba5e3ea07f2f2a656c67b1d9f06cc8a89a42a6" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 # The DataForge parse is CPU heavy; keep dependencies optimized even in dev builds.

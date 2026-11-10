@@ -24,6 +24,8 @@ pub const MAX_CONTRACTS: usize = 2000;
 pub const MAX_ITEMS: usize = 20_000;
 pub const MAX_CRAFTING: usize = 5000;
 pub const MAX_MISSION_REWARDS: usize = 20_000;
+pub const MAX_MISSION_DROPS: usize = 20_000;
+pub const MAX_MISSIONS: usize = 20_000;
 pub const MAX_WARNINGS: usize = 2000;
 const MAX_SHORT: usize = 200;
 const MAX_TEXT: usize = 8000;
@@ -79,6 +81,8 @@ fn canonicalize(ds: &WikeloDataset) -> WikeloDataset {
         r.sources.sort_by(|a, b| (&a.contract_id, &a.when).cmp(&(&b.contract_id, &b.when)));
     }
     c.mission_rewards.sort_by(|a, b| (&a.contract_id, &a.item_id).cmp(&(&b.contract_id, &b.item_id)));
+    c.mission_drops.sort_by(|a, b| (&a.contract_id, &a.item_id).cmp(&(&b.contract_id, &b.item_id)));
+    c.missions.sort_by(|a, b| a.id.cmp(&b.id));
     c
 }
 
@@ -92,6 +96,11 @@ pub struct Stats {
     pub with_image: usize,
     pub crafting: usize,
     pub mission_rewards: usize,
+    /// Absent in reports written before the field existed.
+    #[serde(default)]
+    pub mission_drops: usize,
+    #[serde(default)]
+    pub missions: usize,
     pub warnings: usize,
 }
 
@@ -252,6 +261,8 @@ pub fn validate_dataset(ds: &WikeloDataset, previous: Option<&WikeloDataset>) ->
         ("itens", ds.items.len(), MAX_ITEMS),
         ("receitas", ds.crafting.len(), MAX_CRAFTING),
         ("recompensas de missão", ds.mission_rewards.len(), MAX_MISSION_REWARDS),
+        ("loot de missão", ds.mission_drops.len(), MAX_MISSION_DROPS),
+        ("missões", ds.missions.len(), MAX_MISSIONS),
         ("avisos", ds.warnings.len(), MAX_WARNINGS),
     ] {
         if n > max {
@@ -480,6 +491,48 @@ pub fn validate_dataset(ds: &WikeloDataset, previous: Option<&WikeloDataset>) ->
             ck.err(format!("recompensa de missão {} referencia o item {}, que não está na lista", m.debug_name, m.item_id));
         }
     }
+    let mut seen = HashSet::new();
+    for d in &ds.mission_drops {
+        if !id_ok(&d.contract_id) || !id_ok(&d.item_id) {
+            ck.err(format!("loot de missão com id inválido: {:?}", d.debug_name));
+        }
+        if !seen.insert((d.contract_id.as_str(), d.item_id.as_str())) {
+            ck.warn(format!("loot de missão repetido: {} / {}", d.debug_name, d.name));
+        }
+        for s in [&d.debug_name, &d.generator, &d.name, &d.class_name] {
+            ck.text("loot de missão", s, MAX_SHORT);
+        }
+        if !d.chance.is_finite() || !(0.0..=1.0).contains(&d.chance) {
+            ck.err(format!("loot de missão {} com chance fora de 0..1", d.debug_name));
+        }
+        if !ck.items.contains(d.item_id.as_str()) {
+            ck.err(format!("loot de missão {} referencia o item {}, que não está na lista", d.debug_name, d.item_id));
+        }
+    }
+    let mut seen = HashSet::new();
+    for m in &ds.missions {
+        if !id_ok(&m.id) {
+            ck.err(format!("missão com id inválido: {:?}", m.debug_name));
+        }
+        if !seen.insert(m.id.as_str()) {
+            ck.warn(format!("missão repetida: {}", m.debug_name));
+        }
+        for s in [&m.debug_name, &m.generator, &m.title] {
+            ck.text("missão", s, MAX_SHORT);
+        }
+        for s in [&m.giver, &m.system, &m.family].into_iter().flatten() {
+            ck.text("missão", s, MAX_SHORT);
+        }
+        if m.requires.iter().any(|r| !id_ok(r)) {
+            ck.err(format!("missão {} exige um id inválido", m.debug_name));
+        }
+        ck.text("descrição de missão", &m.description_plain, MAX_TEXT);
+        if let Some(rep) = &m.rep_required {
+            for s in [&rep.min_standing_name, &rep.max_standing_name].into_iter().flatten() {
+                ck.text("reputação de missão", s, MAX_SHORT);
+            }
+        }
+    }
 
     // Against what is active now.
     if let Some(prev) = previous {
@@ -513,6 +566,8 @@ pub fn validate_dataset(ds: &WikeloDataset, previous: Option<&WikeloDataset>) ->
         with_image: ds.items.iter().filter(|i| i.image.is_some()).count(),
         crafting: ds.crafting.len(),
         mission_rewards: ds.mission_rewards.len(),
+        mission_drops: ds.mission_drops.len(),
+        missions: ds.missions.len(),
         warnings: ds.warnings.len(),
     };
     ck.report
@@ -565,6 +620,8 @@ mod tests {
             crafting: vec![],
             warnings: vec!["w".into()],
             mission_rewards: vec![MissionReward { contract_id: "m1".into(), debug_name: "Patrol".into(), generator: "HH".into(), item_id: "i2".into(), class_name: "MG_Scrip".into(), name: "MG Scrip".into(), qty: 10, owner_only: true, one_of: false }],
+            mission_drops: vec![],
+            missions: vec![],
             extractor: Some(ExtractorInfo { name: "wikelo-watcher".into(), version: "0.1.0".into(), commit: "dev".into(), dcb_sha256: "a".into(), ini_sha256: "b".into() }),
         }
     }

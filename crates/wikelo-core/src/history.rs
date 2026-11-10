@@ -464,6 +464,8 @@ mod tests {
             crafting: vec![],
             warnings: vec![],
             mission_rewards: vec![],
+            mission_drops: vec![],
+            missions: vec![],
             extractor: None,
         }
     }
