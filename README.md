@@ -3,7 +3,7 @@
 `wikelo-watcher.exe` é o programa que roda no PC de quem joga Star Citizen e conversa com um servidor [Wikelist](https://wikelist.net) (o site que acompanha os contratos do **Wikelo**). Ele faz duas coisas:
 
 - **Lê o `Game.log`** enquanto você joga e manda para a sua conta os eventos de missão do Wikelo (aceitou, entregou, concluiu) e o fim das outras missões que pagam itens que o site acompanha, dizendo se a missão era sua ou compartilhada por outro jogador (linha `<MissionShared>`). O site ajusta seu inventário e registra as conclusões sozinho.
-- **Envia os dados do jogo** quando sai uma versão nova (opcional): extrai os contratos, itens e ícones do `Data.p4k` instalado e sobe um pacote para o servidor, que valida tudo em quarentena antes de usar.
+- **Envia os dados do jogo** quando sai uma versão nova, ou quando o servidor só tem uma cópia feita por um watcher mais antigo (opcional): extrai os contratos, itens e ícones do `Data.p4k` instalado e sobe um pacote para o servidor, que valida tudo em quarentena antes de usar.
 
 Este repositório é público para que qualquer pessoa possa ler o que o programa faz e conferir que o executável publicado foi compilado a partir deste código.
 
@@ -44,7 +44,7 @@ O executável é um programa gráfico do Windows; num terminal ele se anexa ao c
 ## Como funciona
 
 - Em segundo plano ele roda com prioridade abaixo do normal, lê o `Game.log` a cada 0,75 s (só os bytes novos) e manda os eventos de missão para `POST /api/agent/events` do servidor, com um sinal de vida a cada 20 s. A sessão vem de `POST /api/auth/agent-login` (token de longa duração, guardado só no seu PC).
-- Com o **envio dos dados do jogo** ativado, a cada hora (e quando a janela pede com *Verificar versões agora*) ele compara as versões instaladas (LIVE, PTU…) com `GET /api/agent/datasets`; só quando aparece uma versão que o servidor não tem ele extrai e envia o pacote, e nunca enquanto o jogo está aberto.
+- Com o **envio dos dados do jogo** ativado, a cada hora (e quando a janela pede com *Verificar versões agora*) ele compara as versões instaladas (LIVE, PTU…) com `GET /api/agent/datasets`; ele extrai e envia o pacote quando aparece uma versão que o servidor não tem, ou quando toda cópia que o servidor tem dela veio de um extrator mais antigo que ele (um pacote do mesmo extrator ainda aguardando o administrador já conta), e nunca enquanto o jogo está aberto.
 - A extração é **determinística**: o mesmo `Data.p4k` produz sempre o mesmo `wikelo-data.json`, e o pacote carrega um `contentHash` (`v1:<sha256>` do dataset canônico, sem campos de máquina) que o servidor recalcula e mostra ao lado de cada envio. O pacote **não é assinado**: a confiança vem da validação no servidor (processo isolado, dados re-serializados, imagens recodificadas) e desse hash, que qualquer pessoa com o jogo reproduz com `wikelo-watcher hash`.
 - Sessão, estado e registro ficam em `%LOCALAPPDATA%\wikelo-sc\data\` (`watcher.json`, `watcher.status.json`, `watcher.log`). Sai do PC apenas o que está descrito acima: eventos de missão do Wikelo (com o nick do personagem que aparece no `Game.log`) e, se você ativar, os dados extraídos do jogo.
 

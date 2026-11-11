@@ -298,10 +298,44 @@ struct Me {
     account: Option<AccountInfo>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct KnownDataset {
     channel: String,
     version: String,
+    /// Version of the extractor that made the server's copy (`None` when the server never
+    /// recorded one, or is too old to say).
+    #[serde(default)]
+    extractor: Option<String>,
+}
+
+/// Why a build installed here goes to the server.
+#[derive(Debug, PartialEq, Eq)]
+enum UploadReason {
+    /// The server has no dataset for this game version at all.
+    New,
+    /// It has one, but every copy came from an older extractor than this watcher (the newest
+    /// of those versions, or `None` when the server could not say). A fresh extraction
+    /// brings the fields newer extractors add, e.g. mission rewards.
+    OlderExtractor(Option<String>),
+}
+
+/// Whether `channel version`, installed here, should be extracted and sent given what the
+/// server already has. One copy made by this extractor or a newer one, active or still
+/// waiting for the admin, settles it: our own pending upload counts, so there is no
+/// re-sending loop. An extractor version that does not parse counts as current, never as old.
+fn upload_reason(known: &[KnownDataset], channel: &str, version: &str, mine: &str) -> Option<UploadReason> {
+    let copies: Vec<&KnownDataset> = known.iter().filter(|k| k.channel.eq_ignore_ascii_case(channel) && k.version == version).collect();
+    if copies.is_empty() {
+        return Some(UploadReason::New);
+    }
+    if copies.iter().any(|k| k.extractor.as_deref().is_some_and(|v| !wikelo_core::version::is_newer(mine, v))) {
+        return None;
+    }
+    let newest = copies.iter().filter_map(|k| k.extractor.as_deref()).fold(None::<&str>, |best, v| match best {
+        Some(b) if !wikelo_core::version::is_newer(v, b) => Some(b),
+        _ => Some(v),
+    });
+    Some(UploadReason::OlderExtractor(newest.map(str::to_string)))
 }
 
 #[derive(Deserialize)]
@@ -410,10 +444,13 @@ impl Client {
         let _ = self.http.post(self.url("/api/agent/bye")).header("Authorization", &self.auth()).send_empty();
     }
 
-    fn known_datasets(&self) -> Result<Vec<(String, String)>, SendError> {
+    fn known_datasets(&self) -> Result<Vec<KnownDataset>, SendError> {
         let mut res = check(self.http.get(self.url("/api/agent/datasets")).header("Authorization", &self.auth()).call()?)?;
         let k: KnownDatasets = res.body_mut().read_json().map_err(|e| SendError::Other(e.to_string()))?;
-        Ok(k.known.into_iter().map(|d| (d.channel.to_ascii_uppercase(), d.version)).collect())
+        Ok(k.known
+            .into_iter()
+            .map(|d| KnownDataset { channel: d.channel.to_ascii_uppercase(), ..d })
+            .collect())
     }
 
     /// The newest watcher release the server knows of (`None` when it has not looked yet).
@@ -583,9 +620,10 @@ fn clock() -> String {
     format!("{:02}:{:02}", now.hour(), now.minute())
 }
 
-/// Compare installed builds with the server's and upload a bundle for each new one. The
-/// bundle is not signed: the server validates it in quarantine and recomputes its hash.
-/// Skips while the game runs (it is using the files and the CPU). Returns a one-line summary.
+/// Compare installed builds with the server's and upload a bundle for each one the server
+/// lacks, or has only from an older extractor (see [`upload_reason`]). The bundle is not
+/// signed: the server validates it in quarantine and recomputes its hash. Skips while the
+/// game runs (it is using the files and the CPU). Returns a one-line summary.
 fn data_check(client: &Client, name: &str, handle: &str) -> String {
     let known = match client.known_datasets() {
         Ok(k) => k,
@@ -599,15 +637,18 @@ fn data_check(client: &Client, name: &str, handle: &str) -> String {
     for install in installs {
         let channel = install.channel.to_ascii_uppercase();
         let version = install.manifest.version.clone();
-        if known.iter().any(|(c, v)| *c == channel && *v == version) {
-            continue;
-        }
+        let Some(reason) = upload_reason(&known, &channel, &version, PKG_VERSION) else { continue };
+        let why = match reason {
+            UploadReason::New => format!("{channel} {version} não existe no servidor"),
+            UploadReason::OlderExtractor(Some(old)) => format!("{channel} {version} está no servidor, mas veio do extrator {old} (este é o {PKG_VERSION})"),
+            UploadReason::OlderExtractor(None) => format!("{channel} {version} está no servidor, mas veio de um extrator antigo (este é o {PKG_VERSION})"),
+        };
         if game_active(&install) {
-            say!("{channel} {version} é nova para o servidor, mas o jogo está aberto; envio depois");
+            say!("{why}, e o jogo está aberto; envio depois");
             lines.push(format!("{channel} {version}: envio adiado, jogo aberto"));
             continue;
         }
-        say!("{channel} {version} não existe no servidor: extraindo os dados do jogo…");
+        say!("{why}: extraindo os dados do jogo…");
         let quiet = |_p: wikelo_watcher::ExtractProgress| {};
         match crate::bundling::make_bundle(&install, name, handle, &quiet) {
             Ok(built) => match client.upload_bundle(&built.bytes) {
@@ -1094,6 +1135,22 @@ mod tests {
         assert_eq!(server_error(502, b"<html>bad gateway</html>"), "HTTP 502");
         assert_eq!(server_error(500, br#"{"error":""}"#), "HTTP 500");
         assert_eq!(server_error(404, b""), "HTTP 404");
+    }
+
+    #[test]
+    fn uploads_new_versions_and_copies_from_older_extractors() {
+        let k = |channel: &str, version: &str, extractor: Option<&str>| KnownDataset { channel: channel.into(), version: version.into(), extractor: extractor.map(str::to_string) };
+        let known = vec![k("LIVE", "4.10.1", None), k("LIVE", "4.10.2", Some("0.2.0")), k("PTU", "4.11.0", Some("0.2.1")), k("LIVE", "4.10.3", Some("0.2.0")), k("LIVE", "4.10.3", Some("0.2.1"))];
+        assert_eq!(upload_reason(&known, "LIVE", "4.10.9", "0.2.1"), Some(UploadReason::New), "a version the server lacks");
+        assert_eq!(upload_reason(&known, "LIVE", "4.10.1", "0.2.1"), Some(UploadReason::OlderExtractor(None)), "the server cannot say which extractor made its copy");
+        assert_eq!(upload_reason(&known, "LIVE", "4.10.2", "0.2.1"), Some(UploadReason::OlderExtractor(Some("0.2.0".into()))));
+        assert_eq!(upload_reason(&known, "live", "4.10.2", "0.2.0"), None, "same extractor: nothing to add (channel case does not matter)");
+        assert_eq!(upload_reason(&known, "PTU", "4.11.0", "0.2.1"), None);
+        assert_eq!(upload_reason(&known, "PTU", "4.11.0", "0.1.9"), None, "the server is ahead: never downgrade it");
+        assert_eq!(upload_reason(&known, "LIVE", "4.10.3", "0.2.1"), None, "one up-to-date copy (our own pending upload) is enough");
+        assert_eq!(upload_reason(&known, "LIVE", "4.10.3", "0.2.2"), Some(UploadReason::OlderExtractor(Some("0.2.1".into()))), "names the newest copy");
+        let odd = vec![k("LIVE", "4.10.2", Some("dev"))];
+        assert_eq!(upload_reason(&odd, "LIVE", "4.10.2", "0.2.1"), None, "an unparsable version counts as current, never as old");
     }
 
     #[test]

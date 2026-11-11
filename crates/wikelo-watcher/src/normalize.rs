@@ -212,9 +212,11 @@ impl<'r, 'db, 'a> Normalizer<'r, 'db, 'a> {
         })
     }
 
-    /// Rewards paid by *other* contract givers in items the Wikelo tracker already knows
-    /// (MG Scrip, Council Scrip, parts...), so a completion seen in Game.log can credit
-    /// the inventory with the exact quantity from the game data.
+    /// Rewards paid by *other* contract givers in items: the ones the Wikelo tracker already
+    /// knows (MG Scrip, Council Scrip, secure drives...) and the few one-off item rewards of
+    /// event generators (Battaglia's armor, weapons and ships), which join the item catalog
+    /// here. A completion seen in Game.log can then credit the inventory with the exact
+    /// quantity from the game data. aUEC, reputation, badges and scenario points are not items.
     fn load_mission_rewards(&mut self, wikelo: &[Contract]) -> Vec<MissionReward> {
         let known: HashMap<String, Item> = self.items.values().map(|i| (i.id.clone(), i.clone())).collect();
         let wikelo_ids: HashSet<&str> = wikelo.iter().map(|c| c.id.as_str()).collect();
@@ -244,8 +246,8 @@ impl<'r, 'db, 'a> Normalizer<'r, 'db, 'a> {
                             if ty(r) != Some("ContractResult_Item") || !applies_on_success(r) {
                                 continue;
                             }
-                            let Some(item_id) = r.get("entityClass").and_then(ref_id) else { continue };
-                            let Some(item) = known.get(item_id) else { continue };
+                            let Some(eref) = r.get("entityClass") else { continue };
+                            let Some(item) = self.item(eref) else { continue };
                             out.push(MissionReward {
                                 contract_id: id.to_string(),
                                 debug_name: debug_name.clone(),
